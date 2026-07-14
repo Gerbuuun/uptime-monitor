@@ -53,11 +53,11 @@ pnpm plan
 pnpm deploy -- --yes
 ```
 
-Set `UPTIME_BASE_URL` to the Worker URL printed by Alchemy. The production Worker name is `uptime-monitor`.
+The production Worker name is `uptime-monitor`. After deployment, sign in once with the Worker URL printed by Alchemy;
+the CLI prompts for the API token without echoing it and saves a private local profile.
 
 ```sh
-export UPTIME_BASE_URL=https://uptime-monitor.example.workers.dev
-export UPTIME_ALERT_TO=alerts@example.com
+pnpm cli login --url https://uptime-monitor.example.workers.dev
 ```
 
 ### 3. Create your first monitor
@@ -130,10 +130,10 @@ This section is the reference for scripts, agents, and anyone who needs the comp
 
 ### Connection and invocation
 
-The CLI reads these variables:
-
-- `UPTIME_BASE_URL`: deployed Worker origin, without a trailing path.
-- `UPTIME_API_TOKEN`: bearer token matching the deployed Worker secret.
+Run `uptime login` (or `uptime sign-in`) once to save the Worker origin and API token in
+`~/.config/uptime-monitor/config.json`. The profile file is written with owner-only permissions, and `login` verifies
+the credentials before saving them. `uptime logout` removes its saved credentials, while `uptime config show` displays
+the non-secret settings. CLI commands exclusively use this local profile.
 
 Run it from this repository with `pnpm cli <command>`. The npm package is `uptime-monitor-cli`; after publishing it,
 install and run it elsewhere with:
@@ -220,7 +220,7 @@ pnpm --silent cli project status example-services --json --no-input
 
 Agents should use the CLI instead of constructing Worker API calls manually:
 
-1. Confirm `UPTIME_BASE_URL` and `UPTIME_API_TOKEN` are available without printing the token.
+1. Run `uptime config show` to confirm saved credentials.
 2. Invoke the package with `pnpm --silent` and the global `--json` option.
 3. Inspect with `monitor list --json` or `monitor get <slug> --json` before making a change.
 4. Treat `schemaVersion` as the output contract version and `generatedAt` as the observation time.
@@ -242,4 +242,5 @@ Agents should use the CLI instead of constructing Worker API calls manually:
 ### HTTP API
 
 Every monitor and project endpoint requires the API bearer token. The public endpoints are `/health` and
-`/openapi.json`; they expose no monitor state. Use `${UPTIME_BASE_URL}/openapi.json` as the live HTTP API schema.
+`/openapi.json`; they expose no monitor state. Use the Worker URL shown by `uptime config show` followed by
+`/openapi.json` as the live HTTP API schema.

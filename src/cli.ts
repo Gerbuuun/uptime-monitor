@@ -3,11 +3,11 @@
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
 import * as NodeServices from '@effect/platform-node/NodeServices';
 import * as Cause from 'effect/Cause';
-import * as Config from 'effect/Config';
 import * as Console from 'effect/Console';
 import * as Effect from 'effect/Effect';
 import * as Option from 'effect/Option';
 import * as Queue from 'effect/Queue';
+import * as Redacted from 'effect/Redacted';
 import * as Schedule from 'effect/Schedule';
 import * as Terminal from 'effect/Terminal';
 import { Argument, Command, Flag, Prompt } from 'effect/unstable/cli';
@@ -15,6 +15,13 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/unstable/
 import { HttpApiClient, HttpApiMiddleware } from 'effect/unstable/httpapi';
 
 import { Authorization, UptimeApi } from './api.ts';
+import {
+  configPath,
+  normalizeBaseUrl,
+  normalizeToken,
+  readCliConfig,
+  writeCliConfig,
+} from './cli-config.ts';
 import {
   formatHistoryFrame,
   formatHistoryStatic,
@@ -597,9 +604,104 @@ const project = Command.make('project').pipe(
   Command.withSubcommands([projectCreate, projectList, projectStatus]),
 );
 
+const login = Command.make(
+  'login',
+  {
+    url: Flag.string('url').pipe(Flag.optional, Flag.withDescription('Deployed Worker origin')),
+    token: Flag.string('token').pipe(
+      Flag.optional,
+      Flag.withDescription('Worker API token; prefer the hidden prompt so it is not saved in shell history'),
+    ),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const output = yield* root;
+      const saved = yield* storedConfig();
+      const interactive = canPrompt(output);
+      const baseUrl = Option.isSome(input.url)
+        ? yield* validateBaseUrl(input.url.value)
+        : interactive
+          ? yield* Prompt.run(
+              Prompt.text({
+                message: 'Worker URL',
+                default: saved.baseUrl ?? '',
+                validate: (value) => validateBaseUrl(value).pipe(Effect.as(value)),
+              }),
+            ).pipe(Effect.flatMap(validateBaseUrl))
+          : saved.baseUrl
+            ? saved.baseUrl
+            : yield* Effect.fail(new Error('Missing Worker URL. Pass --url or run login in an interactive terminal.'));
+      const token = Option.isSome(input.token)
+        ? yield* validateToken(input.token.value)
+        : interactive
+          ? yield* Prompt.run(Prompt.password({ message: 'API token', validate: validateToken })).pipe(
+              Effect.map(Redacted.value),
+              Effect.flatMap(validateToken),
+            )
+          : yield* Effect.fail(new Error('Missing API token. Pass --token or run login in an interactive terminal.'));
+
+      yield* withCredentials(baseUrl, token).pipe(
+        Effect.flatMap((client) => client.Monitors.list({ query: { limit: 1 } })),
+      );
+      yield* Effect.try({
+        try: () => writeCliConfig({ baseUrl, token }),
+        catch: (cause) => new Error(`Could not save CLI credentials: ${errorMessage(cause)}`),
+      });
+      yield* printValue(
+        agentOutput('login', {
+          baseUrl,
+          configPath: configPath(),
+        }),
+        output,
+        () => `Signed in. Credentials saved to ${configPath()}.`,
+      );
+    }),
+).pipe(Command.withAlias('sign-in'), Command.withDescription('Save and verify Worker credentials for this device'));
+
+const logout = Command.make('logout', {}, () =>
+  Effect.gen(function* () {
+    const output = yield* root;
+    const saved = yield* storedConfig();
+    yield* Effect.try({
+      try: () => writeCliConfig({}),
+      catch: (cause) => new Error(`Could not update CLI configuration: ${errorMessage(cause)}`),
+    });
+    yield* printValue(
+      agentOutput('logout', { configPath: configPath() }),
+      output,
+      () => 'Signed out. Saved Worker credentials have been removed.',
+    );
+  }),
+).pipe(Command.withDescription('Remove saved Worker credentials from this device'));
+
+const configurationRoot = Command.make('config').pipe(Command.withDescription('Manage local CLI defaults'));
+
+const configurationShow = Command.make('show', {}, () =>
+  Effect.gen(function* () {
+    const output = yield* root;
+    const saved = yield* storedConfig();
+    const baseUrl = saved.baseUrl ?? null;
+    const tokenConfigured = saved.token !== undefined;
+    const values = {
+      configPath: configPath(),
+      baseUrl,
+      tokenConfigured,
+    };
+    yield* printValue(agentOutput('config.show', values), output, () =>
+      [
+        `Config file: ${values.configPath}`,
+        `Worker URL: ${values.baseUrl ?? 'not configured'}`,
+        `Credentials: ${values.tokenConfigured ? 'configured' : 'not configured'}`,
+      ].join('\n'),
+    );
+  }),
+).pipe(Command.withDescription('Show effective CLI configuration without exposing secrets'));
+
+const configuration = configurationRoot.pipe(Command.withSubcommands([configurationShow]));
+
 const cli = root.pipe(
   Command.withDescription('Manage the Uptime Monitor Worker'),
-  Command.withSubcommands([monitor, project]),
+  Command.withSubcommands([login, logout, configuration, monitor, project]),
 );
 
 normalizeResourceSyntax();
@@ -626,37 +728,72 @@ function normalizeResourceSyntax() {
 
 function withClient<A>(use: (client: HttpApiClient.ForApi<typeof UptimeApi>) => Effect.Effect<A, unknown, never>) {
   return Effect.gen(function* () {
-    const baseUrl = yield* requiredConfig('UPTIME_BASE_URL', 'the deployed Worker URL');
-    const token = yield* requiredConfig('UPTIME_API_TOKEN', 'the Worker API bearer token');
-    const authorization = HttpApiMiddleware.layerClient(Authorization, ({ request, next }) =>
-      next(HttpClientRequest.bearerToken(request, token)),
-    );
-    const client = yield* HttpApiClient.make(UptimeApi, {
-      transformClient: (httpClient) =>
-        httpClient.pipe(
-          HttpClient.mapRequest(HttpClientRequest.prependUrl(baseUrl)),
-          HttpClient.retryTransient({ schedule: Schedule.exponential('250 millis'), times: 3 }),
-        ),
-    }).pipe(Effect.provide(authorization), Effect.provide(FetchHttpClient.layer));
+    const { baseUrl, token } = yield* connectionConfig();
+    const client = yield* withCredentials(baseUrl, token);
     return yield* use(client);
   });
 }
 
-function requiredConfig(name: string, description: string) {
-  return Config.string(name).pipe(
-    Effect.mapError(
-      () =>
-        new Error(
-          `${name} is not set. Export ${name} with ${description}; see README.md for setup instructions.`,
-        ),
-    ),
+function withCredentials(baseUrl: string, token: string) {
+  const authorization = HttpApiMiddleware.layerClient(Authorization, ({ request, next }) =>
+    next(HttpClientRequest.bearerToken(request, token)),
   );
+  return HttpApiClient.make(UptimeApi, {
+    transformClient: (httpClient) =>
+      httpClient.pipe(
+        HttpClient.mapRequest(HttpClientRequest.prependUrl(baseUrl)),
+        HttpClient.retryTransient({ schedule: Schedule.exponential('250 millis'), times: 3 }),
+      ),
+  }).pipe(Effect.provide(authorization), Effect.provide(FetchHttpClient.layer));
+}
+
+function connectionConfig() {
+  return Effect.gen(function* () {
+    const saved = yield* storedConfig();
+    const baseUrl = saved.baseUrl;
+    const token = saved.token;
+    if (!baseUrl) {
+      return yield* Effect.fail(
+        new Error('No Worker URL is configured. Run `uptime login` first.'),
+      );
+    }
+    if (!token) {
+      return yield* Effect.fail(
+        new Error('No API token is configured. Run `uptime login` first.'),
+      );
+    }
+    return {
+      baseUrl: yield* validateBaseUrl(baseUrl),
+      token: yield* validateToken(token),
+    };
+  });
+}
+
+function storedConfig() {
+  return Effect.try({
+    try: () => readCliConfig(),
+    catch: (cause) => new Error(`Could not load CLI configuration: ${errorMessage(cause)}`),
+  });
+}
+
+function validateBaseUrl(value: string) {
+  return Effect.try({
+    try: () => normalizeBaseUrl(value),
+    catch: (cause) => errorMessage(cause),
+  });
+}
+
+function validateToken(value: string) {
+  return Effect.try({
+    try: () => normalizeToken(value),
+    catch: (cause) => errorMessage(cause),
+  });
 }
 
 function errorMessage(error: unknown) {
   if (typeof error === 'object' && error !== null && '_tag' in error && typeof error._tag === 'string') {
     if (error._tag === 'NotFound') return 'Resource not found. Check the project or monitor slug and try again.';
-    if (error._tag === 'Unauthorized') return 'Authentication failed. Check UPTIME_API_TOKEN and try again.';
+    if (error._tag === 'Unauthorized') return 'Authentication failed. Run `uptime login` to update saved credentials.';
     if (error._tag === 'InternalServerError') return 'The uptime Worker encountered an internal error.';
     return error._tag.replaceAll(/([a-z])([A-Z])/g, '$1 $2');
   }
