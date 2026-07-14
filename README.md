@@ -26,8 +26,8 @@ always-on server.
 ### 1. Configure your deployment
 
 You need Cloudflare credentials accepted by Alchemy, Email Routing for the sender domain, and a long random API token.
-`UPTIME_ALERT_TO` must be a verified Email Routing destination and `UPTIME_ALERT_FROM` must be allowed by the Worker
-email binding. Do not commit the API token.
+`UPTIME_ALERT_FROM` must be allowed by the Worker email binding. Alert destinations are configured in the CLI after
+deployment; do not commit the API token.
 
 Install dependencies, then copy `.env.example` to the git-ignored `.env` file and fill in its values:
 
@@ -58,7 +58,12 @@ the CLI prompts for the API token without echoing it and saves a private local p
 
 ```sh
 pnpm cli login --url https://uptime-monitor.example.workers.dev
+pnpm cli config set alert-email alerts@example.com
 ```
+
+The saved alert email is used as the default for email alert rules. It must still be a verified Cloudflare Email
+Routing destination. `UPTIME_ALERT_TO` remains supported only as an optional deployment-time default for API clients
+that create monitors with `alerts: true`.
 
 ### 3. Create your first monitor
 
@@ -135,6 +140,9 @@ Run `uptime login` (or `uptime sign-in`) once to save the Worker origin and API 
 the credentials before saving them. `uptime logout` removes its saved credentials, while `uptime config show` displays
 the non-secret settings. CLI commands exclusively use this local profile.
 
+Use `uptime config set alert-email alerts@example.com` to save the default destination used when you create an email
+alert without `--destination`.
+
 Run it from this repository with `pnpm cli <command>`. The npm package is `uptime-monitor-cli`; after publishing it,
 install and run it elsewhere with:
 
@@ -201,6 +209,13 @@ pnpm cli monitor example-api alerts remove primary-email
 Alert creation prompts for the type, destination, events, and confirmation. Email destinations must be verified
 Cloudflare Email Routing destinations. Webhook URLs must use HTTPS and are masked in later CLI and API output. Generic
 webhooks support services such as Slack, Discord, and Teams; provider-specific messaging is not configured.
+
+Set a default email once to skip the email-destination prompt for future email rules:
+
+```sh
+pnpm cli config set alert-email alerts@example.com
+pnpm cli monitor example-api alerts create primary-email --type email --yes --no-input
+```
 
 Monitor and history listings default to 50 items and accept `--limit` up to 500. When another page exists, human
 output prints the next `--cursor`; JSON includes `page.hasMore` and `page.nextCursor`.
