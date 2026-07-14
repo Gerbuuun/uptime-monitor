@@ -1,6 +1,6 @@
 {
   "name": "uptime-monitor-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stateful uptime monitoring CLI for Cloudflare Durable Objects.",
   "license": "MIT",
   "keywords": [
@@ -19,7 +19,7 @@
     "url": "https://github.com/Gerbuuun/uptime-monitor/issues"
   },
   "bin": {
-    "uptime": "./dist/cli.js"
+    "uptm": "./dist/cli.js"
   },
   "files": [
     "dist",
