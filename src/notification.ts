@@ -4,7 +4,6 @@ import * as Context from 'effect/Context';
 import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
-import * as Option from 'effect/Option';
 import * as Schedule from 'effect/Schedule';
 
 import type { AlertType } from './domain.ts';
@@ -32,7 +31,6 @@ export class NotificationError extends Data.TaggedError('NotificationError')<{
 export class Notification extends Context.Service<
   Notification,
   {
-    readonly defaultEmailAddress: string | null;
     readonly send: (message: NotificationMessage) => Effect.Effect<void, NotificationError, RuntimeContext>;
   }
 >()('@UptimeMonitor/Notification') {}
@@ -41,11 +39,9 @@ export const NotificationLive = Layer.effect(
   Notification,
   Effect.gen(function* () {
     const email = yield* EmailSender;
-    const to = yield* Config.option(Config.string('UPTIME_ALERT_TO'));
     const from = yield* Config.string('UPTIME_ALERT_FROM');
 
     return Notification.of({
-      defaultEmailAddress: Option.getOrNull(to),
       send: (message) =>
         (message.alert.type === 'email'
           ? email

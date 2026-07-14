@@ -62,8 +62,7 @@ pnpm cli config set alert-email alerts@example.com
 ```
 
 The saved alert email is used as the default for email alert rules. It must still be a verified Cloudflare Email
-Routing destination. `UPTIME_ALERT_TO` remains supported only as an optional deployment-time default for API clients
-that create monitors with `alerts: true`.
+Routing destination. Every alert rule has an explicit destination; no environment-based destination fallback exists.
 
 ### 3. Create your first monitor
 
