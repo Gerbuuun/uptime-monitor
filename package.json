@@ -1,0 +1,41 @@
+{
+  "name": "uptime-monitor-cli",
+  "version": "0.1.0",
+  "bin": {
+    "uptime": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.cli.json",
+    "cli": "tsx src/cli.ts",
+    "deploy": "alchemy deploy --stage production",
+    "dev": "alchemy dev",
+    "plan": "alchemy plan --stage production",
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm test && pnpm typecheck",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.93",
+    "effect": "4.0.0-beta.93"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260708.1",
+    "@types/node": "^26.1.1",
+    "alchemy": "2.0.0-beta.60",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@11.9.0+sha512.bd682d5d03fe525ef7c9fd6780c6884d1e756ac4c9c9fe00c538782824310dcf90e3ddc4f53835f06dfaebd5085e41855e0bcbb3b60de2ac5bbab89e5036f03b"
+}

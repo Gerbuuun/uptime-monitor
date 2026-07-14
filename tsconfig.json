@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "lib": ["ES2024"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "disableReferencedProjectLoad": true,
+    "disableSourceOfProjectReferenceRedirect": true,
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["alchemy.run.ts", "src/**/*.ts", "test/**/*.ts"]
+}
