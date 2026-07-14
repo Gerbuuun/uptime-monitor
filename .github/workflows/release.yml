@@ -1,67 +1,85 @@
-name: Publish npm package and GitHub Release
+name: release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  publish:
+  pr:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
-      - name: Check out the release tag
-        uses: actions/checkout@v6
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - uses: danielroe/uppt/pr@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
         with:
-          version: 11.9.0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
+  release:
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.merged == true
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: release-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: danielroe/uppt/release@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
         with:
-          node-version: 22
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify that the tag matches package.json
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          test "$TAG" = "v$VERSION"
+  pack:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+    concurrency:
+      group: pack-${{ github.ref }}
+      cancel-in-progress: false
 
-      - name: Test and type-check
-        run: |
-          pnpm test
-          pnpm typecheck
+    permissions: {}
 
-      - name: Publish to npm when needed
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "$PACKAGE_NAME@$PACKAGE_VERSION is already published to npm."
-          else
-            pnpm publish --no-git-checks
-          fi
+    outputs:
+      files: ${{ steps.pack.outputs.files }}
 
-      - name: Create the GitHub Release when needed
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "GitHub Release $TAG already exists."
-          else
-            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
-          fi
+    steps:
+      - id: pack
+        uses: danielroe/uppt/pack@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+
+  publish:
+    if: |
+      github.event_name == 'workflow_dispatch'
+      && startsWith(github.ref, 'refs/tags/v')
+      && needs.pack.outputs.files != '[]'
+    needs: pack
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
+
+    permissions:
+      id-token: write
+
+    environment: npm
+
+    steps:
+      - uses: danielroe/uppt/publish@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+        with:
+          files: ${{ needs.pack.outputs.files }}
