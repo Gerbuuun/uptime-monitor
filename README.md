@@ -135,12 +135,12 @@ This section is the reference for scripts, agents, and anyone who needs the comp
 
 ### Connection and invocation
 
-Run `uptime login` (or `uptime sign-in`) once to save the Worker origin and API token in
+Run `uptm login` (or `uptm sign-in`) once to save the Worker origin and API token in
 `~/.config/uptime-monitor/config.json`. The profile file is written with owner-only permissions, and `login` verifies
-the credentials before saving them. `uptime logout` removes its saved credentials, while `uptime config show` displays
+the credentials before saving them. `uptm logout` removes its saved credentials, while `uptm config show` displays
 the non-secret settings. CLI commands exclusively use this local profile.
 
-Use `uptime config set alert-email alerts@example.com` to save the default destination used when you create an email
+Use `uptm config set alert-email alerts@example.com` to save the default destination used when you create an email
 alert without `--destination`.
 
 Run it from this repository with `pnpm cli <command>`. The npm package is `uptime-monitor-cli`; after publishing it,
@@ -148,7 +148,7 @@ install and run it elsewhere with:
 
 ```sh
 pnpm add -D uptime-monitor-cli
-pnpm exec uptime <command>
+pnpm exec uptm <command>
 ```
 
 ### CLI reference
@@ -235,7 +235,7 @@ pnpm --silent cli project status example-services --json --no-input
 
 Agents should use the CLI instead of constructing Worker API calls manually:
 
-1. Run `uptime config show` to confirm saved credentials.
+1. Run `uptm config show` to confirm saved credentials.
 2. Invoke the package with `pnpm --silent` and the global `--json` option.
 3. Inspect with `monitor list --json` or `monitor get <slug> --json` before making a change.
 4. Treat `schemaVersion` as the output contract version and `generatedAt` as the observation time.
@@ -257,5 +257,5 @@ Agents should use the CLI instead of constructing Worker API calls manually:
 ### HTTP API
 
 Every monitor and project endpoint requires the API bearer token. The public endpoints are `/health` and
-`/openapi.json`; they expose no monitor state. Use the Worker URL shown by `uptime config show` followed by
+`/openapi.json`; they expose no monitor state. Use the Worker URL shown by `uptm config show` followed by
 `/openapi.json` as the live HTTP API schema.

@@ -36,7 +36,7 @@ import {
 } from './cli-output.ts';
 import type { DiscoveryResult } from './domain.ts';
 
-const root = Command.make('uptime').pipe(
+const root = Command.make('uptm').pipe(
   Command.withSharedFlags({
     verbose: Flag.boolean('verbose').pipe(Flag.withDescription('Show expanded, human-readable details')),
     json: Flag.boolean('json').pipe(
@@ -760,7 +760,7 @@ const cli = root.pipe(
 );
 
 normalizeResourceSyntax();
-Command.run(cli, { version: '0.1.0' }).pipe(
+Command.run(cli, { version: '0.2.0' }).pipe(
   Effect.provide(NodeServices.layer),
   Effect.catchCause((cause) => {
     const failure = Cause.findErrorOption(cause);
@@ -809,12 +809,12 @@ function connectionConfig() {
     const token = saved.token;
     if (!baseUrl) {
       return yield* Effect.fail(
-        new Error('No Worker URL is configured. Run `uptime login` first.'),
+        new Error('No Worker URL is configured. Run `uptm login` first.'),
       );
     }
     if (!token) {
       return yield* Effect.fail(
-        new Error('No API token is configured. Run `uptime login` first.'),
+        new Error('No API token is configured. Run `uptm login` first.'),
       );
     }
     return {
@@ -848,7 +848,7 @@ function validateToken(value: string) {
 function errorMessage(error: unknown) {
   if (typeof error === 'object' && error !== null && '_tag' in error && typeof error._tag === 'string') {
     if (error._tag === 'NotFound') return 'Resource not found. Check the project or monitor slug and try again.';
-    if (error._tag === 'Unauthorized') return 'Authentication failed. Run `uptime login` to update saved credentials.';
+    if (error._tag === 'Unauthorized') return 'Authentication failed. Run `uptm login` to update saved credentials.';
     if (error._tag === 'InternalServerError') return 'The uptime Worker encountered an internal error.';
     return error._tag.replaceAll(/([a-z])([A-Z])/g, '$1 $2');
   }
@@ -1073,7 +1073,7 @@ function collectAlertInput(
           : yield* Effect.fail(
               new Error(
                 type === 'email'
-                  ? 'Missing email destination. Pass --destination or set one with `uptime config set alert-email`.'
+                  ? 'Missing email destination. Pass --destination or set one with `uptm config set alert-email`.'
                   : 'Missing webhook destination. Pass --destination.',
               ),
             );
