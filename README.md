@@ -1,24 +1,42 @@
 # Uptime Monitor
 
-Stateful uptime monitoring on Cloudflare. Every service gets its own SQLite-backed Durable Object. The object stores check and incident history, schedules adaptive alarms, reports into an optional project Durable Object, and sends idempotent down/recovery emails through Cloudflare Email Sending.
+Monitor the HTTP services you care about from Cloudflare. Each monitor has durable, SQLite-backed state, so it can
+confirm outages, remember incidents, recover cleanly, and keep a useful audit trail without a separate database or
+always-on server.
 
-The host Worker exposes an authenticated Effect HTTP API and a five-minute supervisor Cron Trigger. Monitor alarms report status changes directly to their project. The supervisor re-arms enabled monitors whose alarms are missing or implausibly overdue and reconciles project membership as a safety net.
+![Terminal walkthrough showing how to create a monitor and inspect its project status.](docs/images/cli-overview.svg)
 
-## Requirements
+<details>
+<summary>Watch the interactive history viewer move across status transitions</summary>
 
-- Cloudflare credentials accepted by Alchemy.
-- Email Routing enabled for the sender domain.
-- `UPTIME_ALERT_TO` must be a verified Cloudflare Email Routing destination.
-- `UPTIME_ALERT_FROM` must be permitted by the Worker email binding.
-- A long random `UPTIME_API_TOKEN`. Do not commit it.
+<img src="docs/images/cli-history.gif" width="960" alt="Animated terminal recording of the history viewer moving through 20 checks: healthy, degraded, failed, then healthy again." />
 
-Install dependencies, then copy `.env.example` to a git-ignored `.env` or export its variables in the shell.
+</details>
+
+## What you get
+
+- Durable, per-service monitoring with SQLite-backed check and incident history.
+- Adaptive cadence: fast confirmation while a service is changing state, quieter checks while it is stable.
+- Email and HTTPS webhook alerts that are persisted and idempotent, so retries do not create duplicate notifications.
+- Optional projects that roll several monitors up into one health status.
+- An interactive CLI history viewer plus long-range timelines that preserve failures and degradations.
+
+## Quick start
+
+### 1. Configure your deployment
+
+You need Cloudflare credentials accepted by Alchemy, Email Routing for the sender domain, and a long random API token.
+`UPTIME_ALERT_TO` must be a verified Email Routing destination and `UPTIME_ALERT_FROM` must be allowed by the Worker
+email binding. Do not commit the API token.
+
+Install dependencies, then copy `.env.example` to the git-ignored `.env` file and fill in its values:
 
 ```sh
 pnpm install
+cp .env.example .env
 ```
 
-On macOS, a convenient option is to keep the API token in Keychain:
+On macOS, you can keep the API token in Keychain instead of a shell history:
 
 ```sh
 security add-generic-password -U -a "$USER" -s uptime-monitor-api-token \
@@ -28,7 +46,7 @@ export UPTIME_API_TOKEN="$(security find-generic-password -w -s uptime-monitor-a
 
 Do not print the result of `security find-generic-password`.
 
-## Deploy
+### 2. Deploy to Cloudflare
 
 ```sh
 pnpm plan
@@ -37,66 +55,102 @@ pnpm deploy -- --yes
 
 Set `UPTIME_BASE_URL` to the Worker URL printed by Alchemy. The production Worker name is `uptime-monitor`.
 
-For example:
-
 ```sh
 export UPTIME_BASE_URL=https://uptime-monitor.example.workers.dev
 export UPTIME_ALERT_TO=alerts@example.com
 ```
 
-## CLI
+### 3. Create your first monitor
 
-The CLI reads these environment variables:
-
-- `UPTIME_BASE_URL`: deployed Worker origin, without a trailing path.
-- `UPTIME_API_TOKEN`: bearer token matching the deployed Worker secret.
-
-Run it from this repository with:
-
-```sh
-pnpm cli <command>
-```
-
-The CLI is packaged for npm as `uptime-monitor-cli`. After it has been published, install it in another project with:
-
-```sh
-pnpm add -D uptime-monitor-cli
-pnpm exec uptime <command>
-```
-
-To publish a release, authenticate with npm and run `pnpm publish`. The package is configured for public access and
-builds the executable before it is packed.
-
-Create a monitor interactively:
+Run the guided wizard from this repository:
 
 ```sh
 pnpm cli monitor create
 ```
 
-The wizard asks for a name and suggests a lowercase URL-safe slug, then offers no project, an existing project, or
-inline project creation. After the URL it runs a discovery check, shows the status, latency, content type, and body
-preview, and suggests either status-only matching or an exact short plain-text body. It then offers an alert rule and
-shows one final confirmation before writing anything. A fresh check is recorded after creation.
+It suggests a URL-safe slug, optionally places the monitor in a project, runs a discovery check, proposes a health
+expectation, and can create an alert rule before it writes anything. A fresh check runs immediately after creation.
 
-Slugs are case-insensitive and contain only letters, numbers, and dashes. Names are presentation text; immutable
-internal UUIDs are generated by the service and cannot be supplied through the CLI or API.
-
-Values passed as arguments or flags are used without prompting:
+To set it up without prompts, provide the values explicitly:
 
 ```sh
 pnpm cli project create "Example Services" --slug example-services
 pnpm cli monitor create "Example API" \
   --slug example-api \
   --project example-services \
-  --url https://api.example.com/
+  --url https://api.example.com/ \
+  --yes --no-input
 ```
 
-In non-interactive mode the discovery suggestion is accepted automatically. Pass `--expected-status` and optionally
-`--expected-body` to override it explicitly. JSON creation output includes the complete discovery result.
+### 4. Check what is happening
 
-The defaults are a 10-second request timeout, 60-second healthy/down intervals, 15-second suspect/recovering intervals, and two checks to confirm both downtime and recovery.
+```sh
+pnpm cli monitor list
+pnpm cli monitor history example-api --limit 20
+pnpm cli project status example-services
+```
 
-Inspect monitors:
+In a terminal, `history` opens the viewer shown above. Use the arrow keys or Home/End to select a check; press `q`,
+Escape, or Enter to close it. Green is healthy, yellow is a successful check that took at least one second, and red is
+a failed check.
+
+## How monitoring behaves
+
+By default, requests time out after 10 seconds. Stable healthy and down monitors check every 60 seconds; the first
+failure and first recovery are rechecked after 15 seconds. Two checks confirm both downtime and recovery.
+
+- `healthy`: normal checks are succeeding.
+- `suspect`: the first failed check has been recorded and is awaiting confirmation.
+- `down`: failure is confirmed, an incident is open, and one down notification is scheduled.
+- `recovering`: the first successful check after downtime is awaiting confirmation.
+- `disabled`: no alarm is scheduled.
+
+Notification actions are recorded before delivery. Email and webhook delivery retry with exponential backoff during
+the current invocation, then retry on a later alarm if needed. An action ID includes the incident, transition, and
+alert rule, preventing duplicate logical notifications.
+
+## History you can audit
+
+The monitor keeps detail where it matters and gradually compacts routine healthy checks:
+
+- Individual healthy checks: seven days, normally one-minute resolution.
+- Five-minute aggregates: through 30 days.
+- Fifteen-minute aggregates: through 90 days.
+- Hourly aggregates: indefinitely.
+- Failed and degraded checks, incidents, and status-duration intervals: indefinitely.
+
+After an upgrade, the first compaction backfills existing checks into each aggregate tier. Timeline buckets include
+sample counts, up/degraded/failed counts, and minimum/average/maximum latency.
+
+---
+
+## CLI, HTTP API, and LLM automation
+
+This section is the reference for scripts, agents, and anyone who needs the complete command surface.
+
+### Connection and invocation
+
+The CLI reads these variables:
+
+- `UPTIME_BASE_URL`: deployed Worker origin, without a trailing path.
+- `UPTIME_API_TOKEN`: bearer token matching the deployed Worker secret.
+
+Run it from this repository with `pnpm cli <command>`. The npm package is `uptime-monitor-cli`; after publishing it,
+install and run it elsewhere with:
+
+```sh
+pnpm add -D uptime-monitor-cli
+pnpm exec uptime <command>
+```
+
+### CLI reference
+
+Slugs are case-insensitive and can contain only letters, numbers, and dashes. Names are presentation text; the
+service generates immutable internal UUIDs that cannot be supplied through the CLI or API. In non-interactive creation,
+the discovery suggestion is accepted automatically. Use `--expected-status` and optionally `--expected-body` to
+override it; JSON creation output includes the complete discovery result.
+
+Inspect monitors and history:
 
 ```sh
 pnpm cli monitor list
@@ -106,61 +160,37 @@ pnpm cli monitor history example-api --limit 20
 pnpm cli monitor timeline example-api --since 30d
 ```
 
-`list` prints one compact line per monitor. In a terminal, `history` opens an interactive timeline: use the arrow
-keys or Home/End to select a check and see its details, then press `q`, Escape, or Enter to close it. The timeline
-uses low green blocks for successful checks, taller yellow blocks for degraded checks (successful but at least one
-second), and full-height red blocks for failures. A marker below the bar identifies the selected check.
-
-Use expanded human-readable output or disable the interactive viewer:
+`list` prints one compact line per monitor. Piped history output is automatically non-interactive and prints checks
+newest first. Use `--verbose` to include response bodies and errors, or `--no-interactive` to print history once:
 
 ```sh
 pnpm cli --verbose monitor get example-api
 pnpm cli --verbose monitor history example-api --no-interactive
 ```
 
-`--verbose` and `--json` are global options and work before or after the command name. Piped history output
-automatically uses the non-interactive view. Non-interactive history prints one newest-first line per check;
-combine it with `--verbose` to include response bodies and errors for every check.
-
-Run a check immediately:
+Run a check, edit selected fields, disable a monitor without losing history, or rename its canonical slug:
 
 ```sh
 pnpm cli monitor check example-api
-```
-
-Edit only selected fields or disable a monitor while retaining its history:
-
-```sh
-pnpm cli monitor edit example-api
 pnpm cli monitor edit example-api --disable
 pnpm cli monitor edit example-api --project example-services
 pnpm cli monitor edit example-api --no-project
-```
-
-Use `--enable` to enable it again.
-
-Rename a monitor without moving its Durable Object or losing checks, incidents, or alerts:
-
-```sh
+pnpm cli monitor edit example-api --enable
 pnpm cli monitor rename old-name new-name --project example-services
 ```
 
-Rename changes the canonical slug without moving the Durable Object, so its checks, incidents, and alerts remain intact.
-The previous ID stops resolving after the rename. A monitor can exist without a project; projects are optional roll-up
-views rather than owners of monitor state.
-
-Inspect project health:
+Renaming does not move the Durable Object, so checks, incidents, and alerts stay intact; the old slug stops resolving.
+Projects are optional roll-up views, not owners of monitor state:
 
 ```sh
 pnpm cli project list
 pnpm cli project status example-services
 ```
 
-A project is `down` when any active monitor is down, `degraded` when any monitor is suspect or recovering, `unknown`
-when it is empty or has an uninitialized monitor, and otherwise `healthy`. Disabled monitors do not lower project
-health.
+A project is `down` if any active monitor is down, `degraded` if any monitor is suspect or recovering, `unknown` when
+empty or uninitialized, and otherwise `healthy`. Disabled monitors do not lower project health.
 
-Manage alert rules:
+Manage alert rules with a stable alert ID:
 
 ```sh
 pnpm cli monitor example-api alerts list
@@ -168,16 +198,18 @@ pnpm cli monitor example-api alerts create
 pnpm cli monitor example-api alerts remove primary-email
 ```
 
-Alert creation prompts for a stable alert ID, type, destination, events, and confirmation. Email destinations must
-be verified Cloudflare Email Routing destinations. Webhook URLs must use HTTPS and are masked in subsequent API and
-CLI output. Generic webhooks cover services such as Slack, Discord, and Teams; provider-specific messaging is not
-configured yet.
+Alert creation prompts for the type, destination, events, and confirmation. Email destinations must be verified
+Cloudflare Email Routing destinations. Webhook URLs must use HTTPS and are masked in later CLI and API output. Generic
+webhooks support services such as Slack, Discord, and Teams; provider-specific messaging is not configured.
 
 Monitor and history listings default to 50 items and accept `--limit` up to 500. When another page exists, human
 output prints the next `--cursor`; JSON includes `page.hasMore` and `page.nextCursor`.
 
-Human-readable output is intentionally concise. Scripts and agents should request stable, context-rich JSON
-explicitly:
+### Structured output and LLM playbook
+
+`--verbose` and `--json` are global options and work before or after the command name. Use `--json` for stable,
+context-rich output; it disables colours and interactive output. With pnpm, add `--silent` so stdout is exactly one
+JSON document. A non-zero exit means the request, authentication, or response decoding failed.
 
 ```sh
 pnpm --silent cli monitor list --json --no-input
@@ -186,59 +218,28 @@ pnpm --silent cli monitor timeline example-api --since 90d --json --no-input
 pnpm --silent cli project status example-services --json --no-input
 ```
 
-Use pnpm's `--silent` option when another program parses stdout so the output is exactly one JSON document. A
-non-zero exit means the request, authentication, or response decoding failed.
-
-## Agent usage
-
-Agents should use the CLI instead of calling the Worker API manually:
+Agents should use the CLI instead of constructing Worker API calls manually:
 
 1. Confirm `UPTIME_BASE_URL` and `UPTIME_API_TOKEN` are available without printing the token.
-2. Invoke the package with pnpm's `--silent` option and always add the CLI's global `--json` option. JSON mode
-   disables colors and interactive output.
-3. Use `monitor list --json` or `monitor get <slug> --json` before changing a monitor.
+2. Invoke the package with `pnpm --silent` and the global `--json` option.
+3. Inspect with `monitor list --json` or `monitor get <slug> --json` before making a change.
 4. Treat `schemaVersion` as the output contract version and `generatedAt` as the observation time.
-5. Recent history JSON includes the complete monitor configuration and current state, aggregate counts, ordering
-   semantics, and every returned check. Use `--limit 500` when the task needs maximum recent context. Use
-   `monitor timeline <slug> --since <duration>` for long-range analysis; its JSON includes bucket resolution, aggregate
-   points, status intervals, and retained anomaly checks.
+5. Recent history JSON includes complete configuration and current state, aggregate counts, ordering semantics, and all
+   returned checks. Use `--limit 500` for maximum recent context; use `monitor timeline <slug> --since <duration>` for
+   long-range analysis, bucket resolution, intervals, and retained anomalies.
 6. Preserve the existing URL, expected response, and cadence unless the task explicitly changes them.
-7. Use `monitor create` for creation and `monitor edit` for partial updates. Supply `--yes --no-input` for mutations
-   so the command can neither prompt nor wait indefinitely.
+7. Use `monitor create` for creation and `monitor edit` for partial updates. Add `--yes --no-input` to every mutation
+   so it cannot prompt or wait indefinitely.
 8. Create alerts non-interactively with all required fields, for example:
    `monitor example-api alerts create primary --type email --destination alerts@example.com --events down,recovered --yes --no-input --json`.
-9. Run `monitor check <slug>` after an update, then inspect `monitor get` and `monitor history`.
-10. Follow `page.nextCursor` until `page.hasMore` is false when complete traversal matters.
-11. Use the canonical monitor slug returned in `monitor.config.slug`; renamed slugs stop resolving immediately.
+9. After an update, run `monitor check <slug>`, then inspect `monitor get` and `monitor history`.
+10. Follow `page.nextCursor` until `page.hasMore` is false when full traversal matters.
+11. Use the canonical slug in `monitor.config.slug`; renamed slugs stop resolving immediately.
 12. Use `project status <slug>` to obtain the current roll-up and every member monitor in one request.
 13. Never pass secrets in monitor URLs or expected response bodies. Treat webhook destinations as secrets even though
     returned values are masked.
 
-The API bearer token authenticates every monitor endpoint. `/health` and `/openapi.json` are intentionally public and expose no monitor state.
+### HTTP API
 
-## State model
-
-- `healthy`: check every 60 seconds by default.
-- `suspect`: first failure; confirm after 15 seconds.
-- `down`: confirmed failure; open one incident and send one down action.
-- `recovering`: first success after downtime; confirm after 15 seconds.
-- `disabled`: no alarm is scheduled.
-
-Notification actions are persisted in the same Durable Object before delivery. Email and webhook delivery retry with
-exponential backoff during the current invocation. If delivery still fails, a later alarm retries the persisted
-action. Each action snapshots its alert type and destination and derives its ID from the incident, transition, and
-alert rule, preventing duplicate logical notifications when an alarm is executed more than once.
-
-## History retention
-
-History becomes coarser with age while preserving the information that matters during an audit:
-
-- Individual healthy checks are retained for seven days (normally one-minute resolution).
-- Five-minute aggregates are retained through 30 days.
-- Fifteen-minute aggregates are retained through 90 days.
-- Hourly aggregates are retained indefinitely.
-- Failed and degraded individual checks, incidents, and status-duration intervals are retained indefinitely.
-
-Before the first compaction after an upgrade, existing checks are backfilled into every aggregate tier. Timeline
-buckets contain sample counts, up/degraded/failed counts, and minimum/average/maximum latency. This keeps normal green
-periods compact while retaining exact yellow/red evidence for agents and humans.
+Every monitor and project endpoint requires the API bearer token. The public endpoints are `/health` and
+`/openapi.json`; they expose no monitor state. Use `${UPTIME_BASE_URL}/openapi.json` as the live HTTP API schema.

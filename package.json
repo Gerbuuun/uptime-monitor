@@ -1,12 +1,29 @@
 {
   "name": "uptime-monitor-cli",
   "version": "0.1.0",
+  "description": "Stateful uptime monitoring CLI for Cloudflare Durable Objects.",
+  "keywords": [
+    "uptime",
+    "monitoring",
+    "cloudflare",
+    "durable-objects",
+    "cli"
+  ],
+  "homepage": "https://github.com/Gerbuuun/uptime-monitor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gerbuuun/uptime-monitor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Gerbuuun/uptime-monitor/issues"
+  },
   "bin": {
     "uptime": "./dist/cli.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "docs/images"
   ],
   "type": "module",
   "scripts": {
