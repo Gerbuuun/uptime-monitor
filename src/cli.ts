@@ -18,6 +18,7 @@ import { Authorization, UptimeApi } from './api.ts';
 import {
   configPath,
   normalizeBaseUrl,
+  normalizeEmail,
   normalizeToken,
   readCliConfig,
   writeCliConfig,
@@ -644,13 +645,14 @@ const login = Command.make(
         Effect.flatMap((client) => client.Monitors.list({ query: { limit: 1 } })),
       );
       yield* Effect.try({
-        try: () => writeCliConfig({ baseUrl, token }),
+        try: () => writeCliConfig({ ...saved, baseUrl, token }),
         catch: (cause) => new Error(`Could not save CLI credentials: ${errorMessage(cause)}`),
       });
       yield* printValue(
         agentOutput('login', {
           baseUrl,
           configPath: configPath(),
+          alertEmailConfigured: saved.alertEmail !== undefined,
         }),
         output,
         () => `Signed in. Credentials saved to ${configPath()}.`,
@@ -663,7 +665,7 @@ const logout = Command.make('logout', {}, () =>
     const output = yield* root;
     const saved = yield* storedConfig();
     yield* Effect.try({
-      try: () => writeCliConfig({}),
+      try: () => writeCliConfig({ alertEmail: saved.alertEmail }),
       catch: (cause) => new Error(`Could not update CLI configuration: ${errorMessage(cause)}`),
     });
     yield* printValue(
@@ -686,18 +688,71 @@ const configurationShow = Command.make('show', {}, () =>
       configPath: configPath(),
       baseUrl,
       tokenConfigured,
+      alertEmail: saved.alertEmail ?? null,
     };
     yield* printValue(agentOutput('config.show', values), output, () =>
       [
         `Config file: ${values.configPath}`,
         `Worker URL: ${values.baseUrl ?? 'not configured'}`,
         `Credentials: ${values.tokenConfigured ? 'configured' : 'not configured'}`,
+        `Default alert email: ${values.alertEmail ?? 'not configured'}`,
       ].join('\n'),
     );
   }),
 ).pipe(Command.withDescription('Show effective CLI configuration without exposing secrets'));
 
-const configuration = configurationRoot.pipe(Command.withSubcommands([configurationShow]));
+const configurationSet = Command.make(
+  'set',
+  {
+    key: Argument.string('key'),
+    value: Argument.string('value').pipe(Argument.optional),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const output = yield* root;
+      if (input.key !== 'alert-email') {
+        return yield* Effect.fail(new Error('Unknown configuration key. Supported key: alert-email.'));
+      }
+      const value = Option.isSome(input.value)
+        ? yield* validateEmail(input.value.value)
+        : canPrompt(output)
+          ? yield* Prompt.run(Prompt.text({ message: 'Default alert email', validate: validateEmail }))
+          : yield* Effect.fail(new Error('Missing configuration value. Pass an email address or run in an interactive terminal.'));
+      const saved = yield* storedConfig();
+      yield* Effect.try({
+        try: () => writeCliConfig({ ...saved, alertEmail: value }),
+        catch: (cause) => new Error(`Could not update CLI configuration: ${errorMessage(cause)}`),
+      });
+      yield* printValue(
+        agentOutput('config.set', { key: 'alert-email', value }),
+        output,
+        () => `Default alert email set to ${value}.`,
+      );
+    }),
+).pipe(Command.withDescription('Set a local default; supported key: alert-email'));
+
+const configurationUnset = Command.make('unset', { key: Argument.string('key') }, ({ key }) =>
+  Effect.gen(function* () {
+    const output = yield* root;
+    if (key !== 'alert-email') {
+      return yield* Effect.fail(new Error('Unknown configuration key. Supported key: alert-email.'));
+    }
+    const saved = yield* storedConfig();
+    yield* Effect.try({
+      try: () => writeCliConfig({ baseUrl: saved.baseUrl, token: saved.token }),
+      catch: (cause) => new Error(`Could not update CLI configuration: ${errorMessage(cause)}`),
+    });
+    yield* printValue(
+      agentOutput('config.unset', { key: 'alert-email' }),
+      output,
+      () => 'Default alert email removed.',
+    );
+  }),
+).pipe(Command.withDescription('Remove a local default; supported key: alert-email'));
+
+const configuration = configurationRoot.pipe(
+  Command.withSubcommands([configurationShow, configurationSet, configurationUnset]),
+);
 
 const cli = root.pipe(
   Command.withDescription('Manage the Uptime Monitor Worker'),
@@ -1000,10 +1055,28 @@ function collectAlertInput(
       message: 'Alert ID',
       validate: validateMonitorID,
     });
-    const destination = yield* requireText(input?.destination ?? Option.none(), `${type} destination`, output, {
-      message: type === 'email' ? 'Email address' : 'Webhook URL',
-      validate: type === 'email' ? validateEmail : validateWebhookUrl,
-    });
+    const defaultEmail = type === 'email' ? (yield* storedConfig()).alertEmail : undefined;
+    const destination = Option.isSome(input?.destination ?? Option.none())
+      ? yield* (type === 'email' ? validateEmail : validateWebhookUrl)(
+          (input?.destination as Option.Some<string>).value,
+        ).pipe(Effect.mapError((message) => new Error(message)))
+      : type === 'email' && defaultEmail && !interactive
+        ? defaultEmail
+        : interactive
+          ? yield* Prompt.run(
+              Prompt.text({
+                message: type === 'email' ? 'Email address' : 'Webhook URL',
+                default: type === 'email' ? defaultEmail : undefined,
+                validate: type === 'email' ? validateEmail : validateWebhookUrl,
+              }),
+            )
+          : yield* Effect.fail(
+              new Error(
+                type === 'email'
+                  ? 'Missing email destination. Pass --destination or set one with `uptime config set alert-email`.'
+                  : 'Missing webhook destination. Pass --destination.',
+              ),
+            );
     const events = Option.isSome(input?.events ?? Option.none())
       ? yield* parseEvents((input?.events as Option.Some<string>).value)
       : interactive
@@ -1066,14 +1139,19 @@ function validateHttpUrl(value: string) {
 
 function validateWebhookUrl(value: string) {
   return Effect.suspend(() =>
-    value.startsWith('https://') ? Effect.succeed(value) : Effect.fail('Webhook URLs must use HTTPS.'),
+    value.trim().length === 0
+      ? Effect.fail('Alert destination cannot be empty.')
+      : value.startsWith('https://')
+        ? Effect.succeed(value)
+        : Effect.fail('Webhook URLs must use HTTPS.'),
   );
 }
 
 function validateEmail(value: string) {
-  return Effect.suspend(() =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? Effect.succeed(value) : Effect.fail('Enter a valid email address.'),
-  );
+  return Effect.try({
+    try: () => normalizeEmail(value),
+    catch: (cause) => errorMessage(cause),
+  });
 }
 
 function validateStatus(value: string) {

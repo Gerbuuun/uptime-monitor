@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 export interface CliConfig {
   readonly baseUrl?: string;
   readonly token?: string;
+  readonly alertEmail?: string;
 }
 
 export function configPath() {
@@ -23,14 +24,15 @@ export function readCliConfig(path = configPath()): CliConfig {
     throw new Error(`CLI configuration at ${path} must be a JSON object.`);
   }
 
-  const config: { baseUrl?: string; token?: string } = {};
+  const config: { baseUrl?: string; token?: string; alertEmail?: string } = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key !== 'baseUrl' && key !== 'token') continue;
+    if (key !== 'baseUrl' && key !== 'token' && key !== 'alertEmail') continue;
     if (typeof item !== 'string') {
       throw new Error(`CLI configuration field ${key} at ${path} must be a string.`);
     }
     if (key === 'baseUrl') config.baseUrl = normalizeBaseUrl(item);
     if (key === 'token') config.token = normalizeToken(item);
+    if (key === 'alertEmail') config.alertEmail = normalizeEmail(item);
   }
   return config;
 }
@@ -73,10 +75,18 @@ export function normalizeToken(value: string) {
   return token;
 }
 
+export function normalizeEmail(value: string) {
+  const email = value.trim();
+  if (!email) throw new Error('Alert destination cannot be empty.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address.');
+  return email;
+}
+
 function normalizeConfig(config: CliConfig): CliConfig {
   return {
     ...(config.baseUrl === undefined ? {} : { baseUrl: normalizeBaseUrl(config.baseUrl) }),
     ...(config.token === undefined ? {} : { token: normalizeToken(config.token) }),
+    ...(config.alertEmail === undefined ? {} : { alertEmail: normalizeEmail(config.alertEmail) }),
   };
 }
 

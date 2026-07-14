@@ -351,8 +351,31 @@ export default Monitor.make(
           Date.now(),
         )).toArray();
 
-        yield* Effect.forEach(actions, (action) =>
-          notification
+        yield* Effect.forEach(actions, (action) => {
+          const destination = action.destination ?? notification.defaultEmailAddress;
+          if (!destination) {
+            const attempts = action.attempts + 1;
+            return state.storage.sql
+              .exec(
+                `UPDATE actions
+                 SET status = 'failed', attempts = ?, next_attempt_at = ?, last_error = ?
+                 WHERE id = ?`,
+                attempts,
+                Date.now() + Math.min(300_000, 30_000 * 2 ** Math.min(attempts - 1, 4)),
+                'No email destination is configured for this legacy alert action.',
+                action.id,
+              )
+              .pipe(
+                Effect.andThen(
+                  Effect.logError('uptime_notification_failed', {
+                    monitorID: config.slug,
+                    actionID: action.id,
+                    attempts,
+                  }),
+                ),
+              );
+          }
+          return notification
             .send({
               actionID: action.id,
               monitorID: config.slug,
@@ -364,7 +387,7 @@ export default Monitor.make(
               error: action.error,
               alert: {
                 type: action.alert_type ?? 'email',
-                destination: action.destination ?? notification.defaultEmailAddress,
+                destination,
               },
             })
             .pipe(
@@ -401,8 +424,8 @@ export default Monitor.make(
                     ),
                   );
               }),
-            ),
-        );
+            );
+        });
       });
 
       const persistResult = Effect.fn('@UptimeMonitor/Monitor.persistResult')(function* (
@@ -621,13 +644,17 @@ export default Monitor.make(
         );
 
         if (!existed && config.alerts && (yield* getAlertRows()).length === 0) {
-          yield* state.storage.sql.exec(
-            `INSERT INTO alert_rules (id, type, destination, events, enabled, created_at, updated_at)
-             VALUES ('default-email', 'email', ?, 'down,recovered', 1, ?, ?)`,
-            notification.defaultEmailAddress,
-            now,
-            now,
-          );
+          if (notification.defaultEmailAddress) {
+            yield* state.storage.sql.exec(
+              `INSERT INTO alert_rules (id, type, destination, events, enabled, created_at, updated_at)
+               VALUES ('default-email', 'email', ?, 'down,recovered', 1, ?, ?)`,
+              notification.defaultEmailAddress,
+              now,
+              now,
+            );
+          } else {
+            yield* Effect.logWarning('default_email_alert_skipped', { monitorID: config.slug });
+          }
         }
 
         if (config.enabled) yield* state.storage.setAlarm(now + 1_000);
