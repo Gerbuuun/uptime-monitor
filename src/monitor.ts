@@ -352,7 +352,7 @@ export default Monitor.make(
         )).toArray();
 
         yield* Effect.forEach(actions, (action) => {
-          const destination = action.destination ?? notification.defaultEmailAddress;
+          const destination = action.destination;
           if (!destination) {
             const attempts = action.attempts + 1;
             return state.storage.sql
@@ -362,7 +362,7 @@ export default Monitor.make(
                  WHERE id = ?`,
                 attempts,
                 Date.now() + Math.min(300_000, 30_000 * 2 ** Math.min(attempts - 1, 4)),
-                'No email destination is configured for this legacy alert action.',
+                'Alert destination is empty or missing.',
                 action.id,
               )
               .pipe(
@@ -593,10 +593,6 @@ export default Monitor.make(
 
       const upsert = Effect.fn('@UptimeMonitor/Monitor.upsert')(function* (config: MonitorConfig) {
         const now = Date.now();
-        const existed =
-          (yield* (yield* state.storage.sql.exec<{ readonly id: number }>(
-            'SELECT id FROM monitor WHERE id = 1',
-          )).toArray()).length > 0;
         yield* state.storage.sql.exec(
           `INSERT INTO monitor (
              id, internal_id, monitor_id, project_id, name, url, expected_status, expected_body, timeout_ms,
@@ -642,20 +638,6 @@ export default Monitor.make(
           config.enabled ? now + 1_000 : null,
           now,
         );
-
-        if (!existed && config.alerts && (yield* getAlertRows()).length === 0) {
-          if (notification.defaultEmailAddress) {
-            yield* state.storage.sql.exec(
-              `INSERT INTO alert_rules (id, type, destination, events, enabled, created_at, updated_at)
-               VALUES ('default-email', 'email', ?, 'down,recovered', 1, ?, ?)`,
-              notification.defaultEmailAddress,
-              now,
-              now,
-            );
-          } else {
-            yield* Effect.logWarning('default_email_alert_skipped', { monitorID: config.slug });
-          }
-        }
 
         if (config.enabled) yield* state.storage.setAlarm(now + 1_000);
         if (!config.enabled) yield* state.storage.deleteAlarm();
